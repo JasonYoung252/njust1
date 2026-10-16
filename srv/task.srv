@@ -1,0 +1,10 @@
+string target
+string type
+uint8 direction
+uint8 region
+float32[] offset
+uint8 now_state
+uint8 next_state
+---
+string result
+

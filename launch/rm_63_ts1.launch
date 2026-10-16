@@ -1,0 +1,7 @@
+<launch>
+    <!-- 启动rm_driver包中的rm_63_driver.launch -->
+    <include file="$(find rm_driver)/launch/rm_63_driver.launch" />
+    
+    <!-- 启动njust包中的arm_control节点 -->
+    <node name="arm_control" pkg="njust" type="arm_control.py" output="screen" />
+</launch>

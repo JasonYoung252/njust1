@@ -1,0 +1,7 @@
+# ROS Noetic / Python 3.8。OCR 代码使用 PaddleOCR 2.x 接口。
+numpy==1.24.4
+scipy==1.10.1
+opencv-contrib-python==4.10.0.84
+pyrealsense2==2.55.1.6486
+paddleocr==2.10.0
+paddlepaddle==3.0.0

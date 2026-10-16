@@ -1,0 +1,22 @@
+# Python caches and virtual environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# ROS / catkin build outputs
+/build/
+/devel/
+/install/
+/logs/
+.catkin_tools/
+*.bag
+*.bag.active
+
+# Editor and operating system files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
