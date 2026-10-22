@@ -1,10 +1,22 @@
 <launch>
+    <!-- 补偿方案：baseline = 原手调常数；robust = robust_opt.fit_from_data 生成的优化方案 -->
+    <arg name="comp_profile" default="baseline" />
+    <arg name="comp_file" default="$(find njust)/config/compensation_$(arg comp_profile).yaml" />
+    <arg name="log_dir" default="~/robust_opt_logs" />
+
     <!-- 启动rm_driver包中的rm_63_driver.launch -->
     <include file="$(find rm_driver)/launch/rm_63_driver.launch" />
-    
+
     <!-- 启动njust包中的arm_control节点 -->
-    <node name="arm_control" pkg="njust" type="arm_control.py" output="screen" />
-    
+    <node name="arm_control" pkg="njust" type="arm_control.py" output="screen">
+        <rosparam command="load" file="$(arg comp_file)" />
+        <param name="comp_profile" value="$(arg comp_profile)" />
+        <param name="log_dir" value="$(arg log_dir)" />
+    </node>
+
     <!-- 启动njust包中的target_position节点 -->
-    <node name="target_position" pkg="njust" type="target_position.py" output="screen" />
+    <node name="target_position" pkg="njust" type="target_position.py" output="screen">
+        <rosparam command="load" file="$(arg comp_file)" />
+        <param name="log_dir" value="$(arg log_dir)" />
+    </node>
 </launch>

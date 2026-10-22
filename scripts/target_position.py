@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+import os
+import csv
+import time
 import cv2
 import rospy
 import threading
@@ -88,71 +91,117 @@ def show_ocr_results(image, target_label, conf_threshold=0.8):
     return filtered
 
 # ---------- 提取目标标签像素位置与类型 ----------
-def get_target_pose(image, ocr_target, conf_threshold=0.6):
+def _box_center(box, image_copy, show):
+    xs = [pt[0] for pt in box]
+    ys = [pt[1] for pt in box]
+    x_center = int(sum(xs)/len(xs))
+    y_center = int(sum(ys)/len(ys))
+    if show:
+        # 在图像上绘制中心点（红色圆点）
+        cv2.circle(image_copy, (x_center, y_center), radius=3, color=(0, 0, 255), thickness=-1)
+        cv2.imshow("u_v_center", image_copy)
+        cv2.waitKey(1000)  # 等待1000毫秒，立即返回，不会阻塞程序
+        cv2.destroyAllWindows()  # 关闭窗口
+    return (x_center, y_center)
+
+def get_target_pose(image, ocr_target, conf_threshold=0.6, show=True):
+    """匹配规则与原版一致：完全匹配；含 'I' 时把 I 当 1；否则把 l 当 1。show=False 时不弹窗（多帧采集用）。"""
     image_copy = image.copy()  # # 避免修改原始图像
     filtered = show_ocr_results(image, ocr_target, conf_threshold)
     for box, (text, _) in filtered:
         text_clear = text.strip()  # text.strip()：去除文本前后空格，避免匹配错误
         if text_clear == ocr_target:
-            xs = [pt[0] for pt in box]
-            ys = [pt[1] for pt in box]
-            x_center = int(sum(xs)/len(xs))
-            y_center = int(sum(ys)/len(ys))
-            # 在图像上绘制中心点（红色圆点）
-            cv2.circle(image_copy, (x_center, y_center), radius=3, color=(0, 0, 255), thickness=-1)
-            cv2.imshow("u_v_center", image_copy)
-            cv2.waitKey(1000)  # 等待1000毫秒，立即返回，不会阻塞程序
-            cv2.destroyAllWindows()  # 关闭窗口  
-            return (x_center, y_center)
+            return _box_center(box, image_copy, show)
         elif 'I' in text_clear:  #防止I和1混淆
-            text_replaced = text_clear.replace('I','1')
-            if text_replaced == ocr_target:
-                xs = [pt[0] for pt in box]
-                ys = [pt[1] for pt in box]
-                x_center = int(sum(xs)/len(xs))
-                y_center = int(sum(ys)/len(ys))
-                # 在图像上绘制中心点（红色圆点）
-                cv2.circle(image_copy, (x_center, y_center), radius=3, color=(0, 0, 255), thickness=-1)
-                cv2.imshow("u_v_center", image_copy)
-                cv2.waitKey(1000)  # 等待1000毫秒，立即返回，不会阻塞程序
-                cv2.destroyAllWindows()  # 关闭窗口  
-                return (x_center, y_center)
+            if text_clear.replace('I','1') == ocr_target:
+                return _box_center(box, image_copy, show)
         else:  #防止l和1混淆
-            text_replaced = text_clear.replace('l','1')
-            if text_replaced == ocr_target:
-                xs = [pt[0] for pt in box]
-                ys = [pt[1] for pt in box]
-                x_center = int(sum(xs)/len(xs))
-                y_center = int(sum(ys)/len(ys))
-                # 在图像上绘制中心点（红色圆点）
-                cv2.circle(image_copy, (x_center, y_center), radius=3, color=(0, 0, 255), thickness=-1)
-                cv2.imshow("u_v_center", image_copy)
-                cv2.waitKey(1000)  # 等待1000毫秒，立即返回，不会阻塞程序
-                cv2.destroyAllWindows()  # 关闭窗口  
-                return (x_center, y_center)
+            if text_clear.replace('l','1') == ocr_target:
+                return _box_center(box, image_copy, show)
     print(f"未找到标签 '{ocr_target}'")
     return (None, None)
 
-# ---------- OCR检测并转换坐标 ----------
-def ocr_detection(ocr_target, camera_index=0, timeout=5):
-    _, _, color_image, _, _ = realsense_processor.get_aligned_images()
+# ---------- 随机优化课程：测量数据记录 ----------
+VISION_LOG_FIELDS = ["session", "frame", "stamp", "target", "direction", "u", "v", "depth_m", "n_valid",
+                     "cam_x", "cam_y", "cam_z", "base_x", "base_y", "base_z",
+                     "ee_x", "ee_y", "ee_z", "ee_rx", "ee_ry", "ee_rz"]
 
-    image_copy = color_image.copy()
-    cv2.imshow("cs", image_copy)
-    # cv2.imwrite("/home/njust/RobotArm_ws/p/2.jpg",image_copy)
-    cv2.waitKey(2000)  # 等待2000毫秒，立即返回，不会阻塞程序
-    cv2.destroyAllWindows()  # 关闭窗口  
+def append_vision_log(rows):
+    """把逐帧测量追加写入 <log_dir>/vision_YYYYmmdd.csv。记录失败不影响控制流程。"""
+    if not rows or not rospy.get_param('~log_enable', True):
+        return
+    try:
+        log_dir = os.path.expanduser(rospy.get_param('~log_dir', '~/robust_opt_logs'))
+        os.makedirs(log_dir, exist_ok=True)
+        path = os.path.join(log_dir, time.strftime('vision_%Y%m%d.csv'))
+        new_file = not os.path.exists(path)
+        with open(path, 'a', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=VISION_LOG_FIELDS)
+            if new_file:
+                writer.writeheader()
+            writer.writerows(rows)
+    except Exception as e:
+        rospy.logwarn(f"视觉日志写入失败: {e}")
 
-    (u, v) = get_target_pose(color_image, ocr_target)
+# ---------- 单帧测量：OCR 与深度取自同一帧 ----------
+def measure_once(ocr_target, now_pose, radius, show):
+    _, depth_intrin, color_image, depth_image, aligned_depth_frame = realsense_processor.get_aligned_images(verbose=False)
+    if show:
+        cv2.imshow("cs", color_image.copy())
+        cv2.waitKey(2000)  # 等待2000毫秒，立即返回，不会阻塞程序
+        cv2.destroyAllWindows()  # 关闭窗口
+
+    (u, v) = get_target_pose(color_image, ocr_target, show=show)
     if u is None:
-        return None  # 返回None，避免解包错误
-    depth_pixel = [u, v]
-    _, _, _, X_cam, Y_cam, Z_cam = realsense_processor.process_frame(depth_pixel)
-    print(f"{X_cam},{Y_cam},{Z_cam}")
-    now_pose = get_current_arm_state()
+        return None
+    res = realsense_processor.measure_pixel([u, v], aligned_depth_frame, depth_intrin, depth_image, radius)
+    if res is None:
+        print(f"像素 ({u},{v}) 附近无有效深度，丢弃该帧")
+        return None
+    dis, n_valid, (X_cam, Y_cam, Z_cam) = res
     X_base, Y_base, Z_base = cam_to_base.convert(X_cam, Y_cam, Z_cam, *now_pose)
+    return {"u": u, "v": v, "depth_m": dis, "n_valid": n_valid,
+            "cam": [X_cam, Y_cam, Z_cam], "base": [float(X_base), float(Y_base), float(Z_base)]}
+
+# ---------- OCR检测并转换坐标（n 帧中位数融合） ----------
+def ocr_detection(ocr_target, camera_index=0, timeout=5):
+    """
+    ROS 参数（私有命名空间 /target_position/）：
+      n_frames      融合帧数，默认 1（与原流程一致，只是改为同帧取深度）
+      depth_radius  深度中位数窗口半径 px，默认 2（5x5）
+      log_enable    是否记录逐帧数据，默认 True
+      log_dir       日志目录，默认 ~/robust_opt_logs
+    全局参数 /robust_opt/direction：当前任务方向（0-3），仅用于日志，collect_gt.py 会设置。
+    """
+    n_frames = max(1, int(rospy.get_param('~n_frames', 1)))
+    radius = int(rospy.get_param('~depth_radius', 2))
+    direction = int(rospy.get_param('/robust_opt/direction', -1))
+
+    now_pose = list(get_current_arm_state())  # 测量期间机械臂静止，位姿取一次
+    session = time.strftime('%Y%m%d-%H%M%S')
+    samples, rows = [], []
+    attempts = 0
+    while len(samples) < n_frames and attempts < 2 * n_frames + 3:
+        attempts += 1
+        s = measure_once(ocr_target, now_pose, radius, show=(attempts == 1))
+        if s is None:
+            continue
+        samples.append(s)
+        rows.append({"session": session, "frame": len(samples) - 1, "stamp": f"{time.time():.3f}",
+                     "target": ocr_target, "direction": direction, "u": s["u"], "v": s["v"],
+                     "depth_m": f"{s['depth_m']:.5f}", "n_valid": s["n_valid"],
+                     "cam_x": f"{s['cam'][0]:.6f}", "cam_y": f"{s['cam'][1]:.6f}", "cam_z": f"{s['cam'][2]:.6f}",
+                     "base_x": f"{s['base'][0]:.6f}", "base_y": f"{s['base'][1]:.6f}", "base_z": f"{s['base'][2]:.6f}",
+                     "ee_x": now_pose[0], "ee_y": now_pose[1], "ee_z": now_pose[2],
+                     "ee_rx": now_pose[3], "ee_ry": now_pose[4], "ee_rz": now_pose[5]})
+    append_vision_log(rows)
+    if not samples:
+        return None  # 返回None，避免解包错误
+
+    base = np.median(np.array([s["base"] for s in samples]), axis=0)
+    print(f"有效帧 {len(samples)}/{n_frames}，基座系中位数: {base}")
     global Arm_State
-    label_pose = [X_base, Y_base, Z_base, Arm_State[3], Arm_State[4], Arm_State[5], Arm_State[6]]
+    label_pose = [float(base[0]), float(base[1]), float(base[2]), Arm_State[3], Arm_State[4], Arm_State[5], Arm_State[6]]
     return label_pose
 
 # ---------- 机械臂状态回调函数 ----------

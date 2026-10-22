@@ -1,0 +1,8 @@
+# 基线方案：原 arm_control.py 中手调的压板补偿常数（行为与改动前完全一致）
+# 任务坐标系：面朝标签，前 x、左 y、上 z（与 arm_control.dxy 一致），单位 m
+compensation:
+  switch_open_approach: [0.0, -0.002, 0.0]
+  switch_open_return: [0.0, -0.0022, 0.0018]
+  switch_close_approach: [0.0, 0.0, 0.0025]
+# 视觉端融合帧数（1 = 与原流程一致）
+n_frames: 1
