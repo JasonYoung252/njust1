@@ -1,10 +1,34 @@
 <launch>
     <!-- 启动rm_driver包中的rm_63_driver.launch -->
     <include file="$(find rm_driver)/launch/rm_63_driver.launch" />
-    
+
     <!-- 启动njust包中的arm_control节点 -->
-    <node name="arm_control" pkg="njust" type="arm_control.py" output="screen" />
-    
+    <node name="arm_control" pkg="njust" type="arm_control.py" output="screen">
+        <!-- 定位失败的最大重试次数，超过后中止任务并后退 10 cm -->
+        <param name="max_pose_attempts" value="10" />
+        <!-- 按实测面板偏航修正偏移方向。先保持 false，看日志中的“面板实测偏航”是否稳定，再开启 -->
+        <param name="use_yaw_correction" value="false" />
+        <param name="max_yaw_correction_deg" value="10.0" />
+    </node>
+
     <!-- 启动njust包中的target_position节点 -->
-    <node name="target_position" pkg="njust" type="target_position.py" output="screen" />
+    <node name="target_position" pkg="njust" type="target_position.py" output="screen">
+        <!-- 每次定位采集的深度帧数，以及采集前丢弃的旧帧数 -->
+        <param name="n_frames" value="5" />
+        <param name="settle_frames" value="3" />
+        <!-- 是否弹出 OCR 调试窗口（原程序行为，每次定位约多等 3 s） -->
+        <param name="debug_view" value="true" />
+        <!-- 定位日志 CSV 与原始数据保存目录，留空不记录；做实验时建议打开 -->
+        <param name="log_csv" value="" />
+        <param name="save_dir" value="" />
+        <!-- 相机设置：深度分辨率、预设（high_accuracy / high_density）、激光功率（max 或数值），留空不修改 -->
+        <param name="depth_width" value="848" />
+        <param name="depth_height" value="480" />
+        <param name="visual_preset" value="" />
+        <param name="laser_power" value="" />
+        <!-- 定位算法参数，见 scripts/depth_localizer.py 中的 LocalizerConfig -->
+        <param name="localizer/plane_radius_m" value="0.06" />
+        <param name="localizer/plane_inlier_thresh_m" value="0.003" />
+        <param name="localizer/min_roi_valid_ratio" value="0.15" />
+    </node>
 </launch>

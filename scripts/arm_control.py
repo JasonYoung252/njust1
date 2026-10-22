@@ -2,6 +2,8 @@
 import math
 import copy
 from e2q import euler_to_quaternion
+import pose_utils
+from exception import TargetNotFoundException
 import rospy
 import threading
 import numpy as np
@@ -24,6 +26,13 @@ class arm_control:
         self.arm_dof = 6
         self.arrival_flag = 0
         self.get = True
+
+        # 定位重试与偏航修正参数（rosparam，节点私有命名空间）
+        self.max_pose_attempts = int(rospy.get_param('~max_pose_attempts', 10))
+        self.use_yaw_correction = bool(rospy.get_param('~use_yaw_correction', False))
+        self.max_yaw_correction_deg = float(rospy.get_param('~max_yaw_correction_deg', 10.0))
+        self.yaw_delta = 0.0          # 实测面板偏航相对名义方向的修正量（rad），每个任务开始时清零
+        self.target_info = None       # 最近一次定位的解析结果（含不确定性）
 
         # ip_address = "192.168.123.88"
         # model = RML63_II
@@ -75,117 +84,137 @@ class arm_control:
         """
         while not rospy.is_shutdown():
             if self.action:
-                if self.current_request.type == 'd':
-                    # 转方向
-                    self.init_position(self.current_request.direction)
-                    self.result_pub.publish("success")
-
-                if self.current_request.type == 'p':
-                    # 
-                    self.get_target_pose()
-                    self.result_pub.publish("success")
-                if self.current_request.type == 'button':
-                    # 按钮
-                    self.init_position(self.current_request.direction)
-                    self.position_dxyz(0.35, 0, -0.1)
-                    # self.position_dxyz(0.1, 0, 0)
-                    self.get_target_pose()
-                    self.control_button()
-                    self.init_position(self.current_request.direction)
-                    self.result_pub.publish("success")
-
-                if self.current_request.type == 'knob':
-                    # 旋钮 未完成)
-                    self.init_position(self.current_request.direction)
-                    self.position_dxyz(0.3, -0.12, -0.25)
-                    self.get_target_pose()
-                    self.control_knob()
-                    self.init_position(self.current_request.direction)
-
-                if self.current_request.type == 'switch':
-                    i = 0
-                    self.init_position(self.current_request.direction)
-                    if self.current_request.now_state == 0 and self.current_request.next_state == 1:
-                        # 压板投入
-                        self.position_dxyz(0.35, 0, -0.1)
-          
-                        self.get_target_pose()
-                        self.control_switch_open(0.033)
-                        self.init_position(self.current_request.direction)
-                        self.result_pub.publish("success")
-                    if self.current_request.now_state == 1 and self.current_request.next_state == 0:
-                        # 压板退出
-                        self.position_dxyz(0.35, 0, -0.1)
-                        self.get_target_pose()
-                        self.control_switch_close()
-                        self.init_position(self.current_request.direction)
-                        self.result_pub.publish("success")
-
-                if self.current_request.type == 'door':
-                    if self.current_request.now_state == 0 and self.current_request.next_state == 1:
-                        # 右拉门 开
-                        self.init_position(10)
-                        self.position_dxyz(0.35, -0.05, -0.3)
-                        # self.position_dxyz(0.14, 0, 0)
-                        self.get_target_pose()
-                        self.control_door_right_pull()
-
-                if self.current_request.type == 'door1':
-                    if self.current_request.now_state == 0 and self.current_request.next_state == 1:
-                        # 柜门正面 开
-                        self.init_position(self.current_request.direction+10)
-                        if self.current_request.direction == 1:
-                            self.position_dxyz(0.25, 0.15, -0.25)
-                            self.get_target_pose()
-                            self.control_door1_open_right()
-                        self.init_position(self.current_request.direction+10)
-                        self.result_pub.publish("success")
-                    if self.current_request.now_state == 1 and self.current_request.next_state == 0:
-                        # 柜门正面 关
-                        self.init_position(self.current_request.direction+10)
-                        if self.current_request.direction == 1:
-                            self.position_dxyz(0.25, 0.15, -0.25)
-                            self.get_target_pose()
-                            self.init_position(self.current_request.direction+10)
-                            self.init_position(12)
-                            self.control_door1_close_right()
-                            self.init_position(self.current_request.direction+10)
-                            self.position_dxyz(0.25, 0.15, -0.25)
-                            self.get_target_pose()
-                            self.control_door1_close2_right()
-                            self.init_position(self.current_request.direction+10)
-                            self.result_pub.publish("success")
-                        if self.current_request.direction == 3:
-                            self.control_door1_close1_left()
-                        # self.position_dxyz(0.05, 0, -0.12)
-                        # if not self.get_target_pose():
-                        #     continue
-                        # self.control_door1_close2()
-
-                if self.current_request.type == 'door2':
-                    if self.current_request.now_state == 0 and self.current_request.next_state == 1:
-                        self.position_dxyz(0.2, 0, -0.2)
-                        self.get_target_pose()
-                        self.control_door2_open2_0()
-
-                if self.current_request.type == 'door3':
-                    # 淮安 防火门
-                    if self.current_request.now_state == 0 and self.current_request.next_state == 1:
-                        self.init_position(11)
-                        self.position_dxyz(0.3, 0, -0.3)
-                        self.get_target_pose()
-                        self.control_door3_open()
-                        self.init_position(11)
-                    if self.current_request.now_state == 1 and self.current_request.next_state == 0:
-                        self.init_position(12)
-                        self.control_door3_close()
-                        self.get_target_pose()
-                        self.control_door3_close2()
-                        self.init_position(12)
-                        self.control_door3_close3()
-
-                self.action = False
+                try:
+                    self._dispatch_task()
+                except TargetNotFoundException as e:
+                    self.handle_target_not_found(e)
+                except Exception as e:
+                    rospy.logerr(f"任务执行出错：{e}")
+                    self.result_pub.publish(f"fail: {e}")
+                finally:
+                    self.action = False
             rospy.sleep(0.1)  # 防止CPU占用过高
+
+    def _dispatch_task(self):
+        """按任务类型执行（原 action_thread_func 中的分支，逻辑未改）"""
+        if self.current_request.type == 'd':
+            # 转方向
+            self.init_position(self.current_request.direction)
+            self.result_pub.publish("success")
+
+        if self.current_request.type == 'p':
+            # 
+            self.get_target_pose()
+            self.result_pub.publish("success")
+        if self.current_request.type == 'button':
+            # 按钮
+            self.init_position(self.current_request.direction)
+            self.position_dxyz(0.35, 0, -0.1)
+            # self.position_dxyz(0.1, 0, 0)
+            self.get_target_pose()
+            self.control_button()
+            self.init_position(self.current_request.direction)
+            self.result_pub.publish("success")
+
+        if self.current_request.type == 'knob':
+            # 旋钮 未完成)
+            self.init_position(self.current_request.direction)
+            self.position_dxyz(0.3, -0.12, -0.25)
+            self.get_target_pose()
+            self.control_knob()
+            self.init_position(self.current_request.direction)
+
+        if self.current_request.type == 'switch':
+            i = 0
+            self.init_position(self.current_request.direction)
+            if self.current_request.now_state == 0 and self.current_request.next_state == 1:
+                # 压板投入
+                self.position_dxyz(0.35, 0, -0.1)
+
+                self.get_target_pose()
+                self.control_switch_open(0.033)
+                self.init_position(self.current_request.direction)
+                self.result_pub.publish("success")
+            if self.current_request.now_state == 1 and self.current_request.next_state == 0:
+                # 压板退出
+                self.position_dxyz(0.35, 0, -0.1)
+                self.get_target_pose()
+                self.control_switch_close()
+                self.init_position(self.current_request.direction)
+                self.result_pub.publish("success")
+
+        if self.current_request.type == 'door':
+            if self.current_request.now_state == 0 and self.current_request.next_state == 1:
+                # 右拉门 开
+                self.init_position(10)
+                self.position_dxyz(0.35, -0.05, -0.3)
+                # self.position_dxyz(0.14, 0, 0)
+                self.get_target_pose()
+                self.control_door_right_pull()
+
+        if self.current_request.type == 'door1':
+            if self.current_request.now_state == 0 and self.current_request.next_state == 1:
+                # 柜门正面 开
+                self.init_position(self.current_request.direction+10)
+                if self.current_request.direction == 1:
+                    self.position_dxyz(0.25, 0.15, -0.25)
+                    self.get_target_pose()
+                    self.control_door1_open_right()
+                self.init_position(self.current_request.direction+10)
+                self.result_pub.publish("success")
+            if self.current_request.now_state == 1 and self.current_request.next_state == 0:
+                # 柜门正面 关
+                self.init_position(self.current_request.direction+10)
+                if self.current_request.direction == 1:
+                    self.position_dxyz(0.25, 0.15, -0.25)
+                    self.get_target_pose()
+                    self.init_position(self.current_request.direction+10)
+                    self.init_position(12)
+                    self.control_door1_close_right()
+                    self.init_position(self.current_request.direction+10)
+                    self.position_dxyz(0.25, 0.15, -0.25)
+                    self.get_target_pose()
+                    self.control_door1_close2_right()
+                    self.init_position(self.current_request.direction+10)
+                    self.result_pub.publish("success")
+                if self.current_request.direction == 3:
+                    self.control_door1_close1_left()
+                # self.position_dxyz(0.05, 0, -0.12)
+                # if not self.get_target_pose():
+                #     continue
+                # self.control_door1_close2()
+
+        if self.current_request.type == 'door2':
+            if self.current_request.now_state == 0 and self.current_request.next_state == 1:
+                self.position_dxyz(0.2, 0, -0.2)
+                self.get_target_pose()
+                self.control_door2_open2_0()
+
+        if self.current_request.type == 'door3':
+            # 淮安 防火门
+            if self.current_request.now_state == 0 and self.current_request.next_state == 1:
+                self.init_position(11)
+                self.position_dxyz(0.3, 0, -0.3)
+                self.get_target_pose()
+                self.control_door3_open()
+                self.init_position(11)
+            if self.current_request.now_state == 1 and self.current_request.next_state == 0:
+                self.init_position(12)
+                self.control_door3_close()
+                self.get_target_pose()
+                self.control_door3_close2()
+                self.init_position(12)
+                self.control_door3_close3()
+
+    def handle_target_not_found(self, e):
+        """多次定位失败：沿原方向后退 10 cm，上报失败，不再朝无效目标运动。"""
+        rospy.logerr(f"目标定位失败，任务中止：{e}")
+        try:
+            self.yaw_delta = 0.0
+            self.position_dxyz(-0.1, 0, 0)
+        except Exception as move_err:
+            rospy.logerr(f"后退失败：{move_err}")
+        self.result_pub.publish(f"fail: target {self.current_request.target} not found")
     
     def taskCallback(self, req):
         """
@@ -198,6 +227,8 @@ class arm_control:
         uint8 next_state   开关目标状态
         """
         self.current_request = req
+        self.yaw_delta = 0.0
+        self.target_info = None
         print(f"收到任务:target={req.target}, type={req.type}, direction={req.direction}, region={req.region}, offset={req.offset}, now_state={req.now_state}, next_state={req.next_state}")
         self.action = True
         return taskResponse("OK")
@@ -221,18 +252,38 @@ class arm_control:
         self.get = False
 
     def get_target_pose(self, x = 0, y = 0, z = 0):
-        """通过相机获取目标状态"""
+        """
+        通过相机获取目标状态。
+        原程序在定位失败时无限重试；现在最多重试 max_pose_attempts 次，仍失败则抛出 TargetNotFoundException，
+        由 action_thread_func 中止任务，避免机械臂朝无效坐标运动。
+        """
         self.get_state()
-        while True:
+        for attempt in range(1, self.max_pose_attempts + 1):
             rospy.wait_for_service('/pose')
             self.target_pose = self.client(self.current_request.target)
-            if self.target_pose.pose[0]**2 + self.target_pose.pose[1]**2 > self.current_pose[0]**2 + self.current_pose[1]**2:
-                break
+            info = pose_utils.unpack_pose(self.target_pose.pose)
+            far_enough = info["x"] ** 2 + info["y"] ** 2 > self.current_pose[0] ** 2 + self.current_pose[1] ** 2
+            if info["valid"] and far_enough:
+                self.target_info = info
+                self.update_yaw_correction(info)
+                if info["extended"]:
+                    rospy.loginfo(f"定位有效（第{attempt}次）：status={info['status']}, "
+                                  f"σn={info['sigma_normal'] * 1000:.2f} mm, σlat={info['sigma_lateral'] * 1000:.2f} mm")
+                return True
+            rospy.logwarn(f"第{attempt}/{self.max_pose_attempts}次定位无效：{list(self.target_pose.pose)[:3]}")
+            if x == 0 and y == 0 and z == 0:
+                rospy.sleep(0.2)
             else:
-                if x == 0 and y == 0 and z == 0:
-                    pass
-                else:
-                    self.position_dxyz(x, y, z)
+                self.position_dxyz(x, y, z)
+        raise TargetNotFoundException(f"标签 {self.current_request.target} 连续 {self.max_pose_attempts} 次定位无效")
+
+    def update_yaw_correction(self, info):
+        """根据实测面板朝向计算偏移量的偏航修正（默认关闭，只记录日志）。"""
+        delta, ok = pose_utils.yaw_correction(self.current_request.direction, info.get("facing_yaw"),
+                                              self.max_yaw_correction_deg)
+        if ok:
+            rospy.loginfo(f"面板实测偏航 {np.degrees(delta):.2f}°（{'已启用修正' if self.use_yaw_correction else '未启用修正'}）")
+        self.yaw_delta = delta if (ok and self.use_yaw_correction) else 0.0
 
     def get_state(self):
         """获取机械臂状态"""
@@ -258,10 +309,8 @@ class arm_control:
             self.gripper_pose_pub.publish(gripper_cmd)
     
     def dxy(self, x, y):
-        a = self.current_request.direction % 10
-        dx = x * np.cos(np.pi*a/2) + y * np.sin(np.pi*a/2)
-        dy = - x * np.sin(np.pi*a/2) + y * np.cos(np.pi*a/2)
-        return dx, dy
+        """面朝标签坐标系（前 x、左 y）的偏移 -> 基座坐标系。yaw_delta=0 时与原程序完全一致。"""
+        return pose_utils.rotate_offset(x, y, self.current_request.direction, self.yaw_delta)
 
     # -------------------------------------------功能函数-------------------------------------------
     def init_position(self, num):

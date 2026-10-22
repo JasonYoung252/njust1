@@ -52,3 +52,13 @@ class NoButtonException(Exception):
         self.message = message
         self.error_code = error_code
         super().__init__(message)
+
+class TargetNotFoundException(Exception):
+    """
+    多次定位后仍未得到有效目标位置。
+    """
+
+    def __init__(self, message: str, error_code: int = 4001):
+        self.message = message
+        self.error_code = error_code
+        super().__init__(message)
