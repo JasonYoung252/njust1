@@ -35,6 +35,11 @@ class RealSenseProcessor:
         self.cx = intrinsics.ppx  # 主点（cx）
         self.cy = intrinsics.ppy  # 主点（cy）
 
+        # 深度图原始值 * depth_scale = 米（D435 通常为 0.001）
+        self.depth_scale = profile.get_device().first_depth_sensor().get_depth_scale()
+        # 对齐器只需创建一次
+        self.align = rs.align(rs.stream.color)
+
     def calculate_average_depth_in_circle(self, depth_image, center_x, center_y, radius=10):
         """
         计算以圆心为中心，半径为 radius 的圆形区域内的平均深度
@@ -83,12 +88,12 @@ class RealSenseProcessor:
         pixel = [int(u), int(v)]
         return u, v, pixel
     
-    def get_aligned_images(self):
+    def get_aligned_images(self, verbose=True):
         """
         从Intel RealSense摄像头获取对齐后的RGB图像和深度图像
         """
         frames = self.pipeline.wait_for_frames()  # 等待获取图像帧
-        aligned_frames = rs.align(rs.stream.color).process(frames)
+        aligned_frames = self.align.process(frames)
         aligned_depth_frame = aligned_frames.get_depth_frame()  # 获取对齐帧中的depth帧
         color_frame = aligned_frames.get_color_frame()  # 获取对齐帧中的color帧
     
@@ -111,7 +116,8 @@ class RealSenseProcessor:
         depth_image_3d = np.dstack(
             (depth_image_8bit, depth_image_8bit, depth_image_8bit))  # 3通道深度图
         color_image = np.asanyarray(color_frame.get_data())  # RGB图
-        print("获取图片")
+        if verbose:
+            print("获取图片")
         # 返回相机内参、深度参数、彩色图、深度图、齐帧中的depth帧
         return intr, depth_intrin, color_image, depth_image, aligned_depth_frame
 
@@ -133,6 +139,26 @@ class RealSenseProcessor:
         # print ('camera_coordinate: ',camera_coordinate)
         print('camera_coordinate: ',camera_coordinate)
         return dis, camera_coordinate[0], camera_coordinate[1], camera_coordinate[2]
+
+    def measure_pixel(self, depth_pixel, aligned_depth_frame, depth_intrin, depth_image, radius=2):
+        """
+        在【同一帧】对齐深度上，用 (2r+1)x(2r+1) 窗口内有效深度的中位数反投影到相机坐标系。
+        相比单像素 get_distance：剔除了 0 值空洞，对边缘和噪点更稳健。
+        :return: (深度 m, 有效像素数, [X, Y, Z] m)；窗口内无有效深度时返回 None
+        """
+        u = int(round(depth_pixel[0]))
+        v = int(round(depth_pixel[1]))
+        h, w = depth_image.shape
+        if not (0 <= u < w and 0 <= v < h):
+            return None
+        r = max(0, int(radius))
+        win = depth_image[max(0, v - r):min(h, v + r + 1), max(0, u - r):min(w, u + r + 1)]
+        valid = win[win > 0]
+        if valid.size == 0:
+            return None
+        dis = float(np.median(valid)) * self.depth_scale
+        point = rs.rs2_deproject_pixel_to_point(depth_intrin, [float(u), float(v)], dis)
+        return dis, int(valid.size), [float(point[0]), float(point[1]), float(point[2])]
 
     def process_frame(self,depth_pixel, radius=5):
         """

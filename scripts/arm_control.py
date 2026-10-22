@@ -9,6 +9,9 @@ from robotic_arm import *
 from njust.msg import result
 from njust.srv import task, taskResponse, pose, poseResponse
 from rm_msgs.msg import ArmState, Gripper_Pick, Gripper_Set, GetArmState_Command, MoveJ, MoveJ_P, MoveL, Plan_State
+import os
+import csv
+import time
 
 class arm_control:
     def __init__(self):
@@ -24,6 +27,17 @@ class arm_control:
         self.arm_dof = 6
         self.arrival_flag = 0
         self.get = True
+
+        # ---- 随机优化课程：压板补偿量参数化 ----
+        # 任务坐标系（面朝标签：前 x、左 y、上 z，与 dxy 一致），单位 m。
+        # 默认值就是原先写死在 control_switch_open/close 里的常数，不加载配置时行为与原来完全相同。
+        self.comp_default = {
+            'switch_open_approach': [0.0, -0.002, 0.0],
+            'switch_open_return': [0.0, -0.0022, 0.0018],
+            'switch_close_approach': [0.0, 0.0, 0.0025],
+        }
+        self.comp = self.load_compensation()
+        self.last_cmd = None
 
         # ip_address = "192.168.123.88"
         # model = RML63_II
@@ -111,6 +125,7 @@ class arm_control:
           
                         self.get_target_pose()
                         self.control_switch_open(0.033)
+                        self.log_execution('switch_open_approach')
                         self.init_position(self.current_request.direction)
                         self.result_pub.publish("success")
                     if self.current_request.now_state == 1 and self.current_request.next_state == 0:
@@ -118,6 +133,7 @@ class arm_control:
                         self.position_dxyz(0.35, 0, -0.1)
                         self.get_target_pose()
                         self.control_switch_close()
+                        self.log_execution('switch_close_approach')
                         self.init_position(self.current_request.direction)
                         self.result_pub.publish("success")
 
@@ -257,6 +273,51 @@ class arm_control:
             gripper_cmd.position = position  # 位置
             self.gripper_pose_pub.publish(gripper_cmd)
     
+    def load_compensation(self):
+        """从 ~compensation 读取补偿量，缺省项用原常数。"""
+        comp = {k: list(v) for k, v in self.comp_default.items()}
+        param = rospy.get_param('~compensation', {}) or {}
+        for k, v in param.items():
+            if k not in comp:
+                rospy.logwarn(f"未知补偿项 {k}，已忽略")
+                continue
+            if len(v) != 3:
+                rospy.logwarn(f"补偿项 {k} 应为 3 维 [x, y, z]，已忽略: {v}")
+                continue
+            comp[k] = [float(x) for x in v]
+        profile = rospy.get_param('~comp_profile', 'default')
+        rospy.loginfo(f"压板补偿配置 [{profile}]（任务系 mm）: " +
+                      ", ".join(f"{k}={[round(1000 * x, 2) for x in v]}" for k, v in comp.items()))
+        return comp
+
+    def log_execution(self, action):
+        """把本次压板操作写入 <log_dir>/exec_YYYYmmdd.csv，outcome 列留空供实验后手工填写
+        （success / fail / over）。记录失败不影响控制。"""
+        try:
+            log_dir = os.path.expanduser(rospy.get_param('~log_dir', '~/robust_opt_logs'))
+            os.makedirs(log_dir, exist_ok=True)
+            path = os.path.join(log_dir, time.strftime('exec_%Y%m%d.csv'))
+            fields = ['stamp', 'target', 'action', 'direction', 'comp_profile', 'comp_x', 'comp_y', 'comp_z',
+                      'n_frames', 'target_x', 'target_y', 'target_z', 'cmd_x', 'cmd_y', 'cmd_z', 'outcome']
+            c = self.comp[action]
+            cmd = self.last_cmd or [float('nan')] * 3
+            row = {'stamp': f"{time.time():.3f}", 'target': self.current_request.target, 'action': action,
+                   'direction': self.current_request.direction,
+                   'comp_profile': rospy.get_param('~comp_profile', 'default'),
+                   'comp_x': c[0], 'comp_y': c[1], 'comp_z': c[2],
+                   'n_frames': rospy.get_param('/target_position/n_frames', 1),
+                   'target_x': self.target_pose.pose[0], 'target_y': self.target_pose.pose[1],
+                   'target_z': self.target_pose.pose[2],
+                   'cmd_x': cmd[0], 'cmd_y': cmd[1], 'cmd_z': cmd[2], 'outcome': ''}
+            new_file = not os.path.exists(path)
+            with open(path, 'a', newline='') as f:
+                w = csv.DictWriter(f, fieldnames=fields)
+                if new_file:
+                    w.writeheader()
+                w.writerow(row)
+        except Exception as e:
+            rospy.logwarn(f"执行日志写入失败: {e}")
+
     def dxy(self, x, y):
         a = self.current_request.direction % 10
         dx = x * np.cos(np.pi*a/2) + y * np.sin(np.pi*a/2)
@@ -556,10 +617,13 @@ class arm_control:
         i = 0
         # 下 转紧半圈
         if self.arrival_flag == i:
-            dx, dy = self.dxy(self.current_request.offset[0] - 0.06, self.current_request.offset[1]-0.002)
+            c = self.comp['switch_open_approach']
+            dx, dy = self.dxy(self.current_request.offset[0] - 0.06 + c[0], self.current_request.offset[1] + c[1])
             moveJ_P_TargetPose.Pose.position.x = self.target_pose.pose[0] + dx
             moveJ_P_TargetPose.Pose.position.y = self.target_pose.pose[1] + dy
-            moveJ_P_TargetPose.Pose.position.z = self.target_pose.pose[2] + self.current_request.offset[2] - l
+            moveJ_P_TargetPose.Pose.position.z = self.target_pose.pose[2] + self.current_request.offset[2] - l + c[2]
+            self.last_cmd = [moveJ_P_TargetPose.Pose.position.x, moveJ_P_TargetPose.Pose.position.y,
+                             moveJ_P_TargetPose.Pose.position.z]
             moveJ_P_TargetPose.Pose.orientation.x = self.target_pose.pose[3]
             moveJ_P_TargetPose.Pose.orientation.y = self.target_pose.pose[4]
             moveJ_P_TargetPose.Pose.orientation.z = self.target_pose.pose[5]
@@ -736,10 +800,11 @@ class arm_control:
         rospy.sleep(1.0)
 
         if self.arrival_flag == i:
-            dx, dy = self.dxy(self.current_request.offset[0] - 0.06, self.current_request.offset[1]-0.0022)
+            c = self.comp['switch_open_return']
+            dx, dy = self.dxy(self.current_request.offset[0] - 0.06 + c[0], self.current_request.offset[1] + c[1])
             moveJ_P_TargetPose.Pose.position.x = self.target_pose.pose[0] + dx
             moveJ_P_TargetPose.Pose.position.y = self.target_pose.pose[1] + dy
-            moveJ_P_TargetPose.Pose.position.z = self.target_pose.pose[2] + self.current_request.offset[2] + 0.0018
+            moveJ_P_TargetPose.Pose.position.z = self.target_pose.pose[2] + self.current_request.offset[2] + c[2]
             moveJ_P_TargetPose.Pose.orientation.x = self.target_pose.pose[3]
             moveJ_P_TargetPose.Pose.orientation.y = self.target_pose.pose[4]
             moveJ_P_TargetPose.Pose.orientation.z = self.target_pose.pose[5]
@@ -1068,10 +1133,13 @@ class arm_control:
         moveJ_P_TargetPose = MoveJ_P()
         moveL_TargetPose = MoveL()
         if self.arrival_flag == 0:
-            dx, dy = self.dxy(self.current_request.offset[0] - 0.06, self.current_request.offset[1])
+            c = self.comp['switch_close_approach']
+            dx, dy = self.dxy(self.current_request.offset[0] - 0.06 + c[0], self.current_request.offset[1] + c[1])
             moveJ_P_TargetPose.Pose.position.x = self.target_pose.pose[0] + dx
             moveJ_P_TargetPose.Pose.position.y = self.target_pose.pose[1] + dy
-            moveJ_P_TargetPose.Pose.position.z = self.target_pose.pose[2] + self.current_request.offset[2] + 0.0025
+            moveJ_P_TargetPose.Pose.position.z = self.target_pose.pose[2] + self.current_request.offset[2] + c[2]
+            self.last_cmd = [moveJ_P_TargetPose.Pose.position.x, moveJ_P_TargetPose.Pose.position.y,
+                             moveJ_P_TargetPose.Pose.position.z]
             moveJ_P_TargetPose.Pose.orientation.x = self.target_pose.pose[3]
             moveJ_P_TargetPose.Pose.orientation.y = self.target_pose.pose[4]
             moveJ_P_TargetPose.Pose.orientation.z = self.target_pose.pose[5]
